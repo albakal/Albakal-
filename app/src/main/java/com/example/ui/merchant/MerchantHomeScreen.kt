@@ -83,6 +83,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.runtime.mutableStateMapOf
+import com.example.data.model.OrderItemEntity
 import com.example.data.model.OrderEntity
 import com.example.data.model.ProductEntity
 import com.example.ui.AlbakalViewModel
@@ -314,6 +318,7 @@ private fun MerchantOrdersTab(viewModel: AlbakalViewModel) {
   val currentUser by viewModel.currentUser.collectAsState()
 
   var selectedOrderIdForShipping by remember { mutableStateOf<String?>(null) }
+  var selectedOrderForPreparation by remember { mutableStateOf<OrderEntity?>(null) }
 
   val myOrders = remember(orders, currentUser) {
     orders.filter { it.merchantId == currentUser?.id }
@@ -337,93 +342,31 @@ private fun MerchantOrdersTab(viewModel: AlbakalViewModel) {
     verticalArrangement = Arrangement.spacedBy(12.dp)
   ) {
     items(myOrders) { order ->
-      Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-      ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text(text = order.orderNumber, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            OrderStatusBadge(status = order.orderStatus)
-          }
-
-          Spacer(modifier = Modifier.height(6.dp))
-          Text(text = "العميل: ${order.customerName} - ${order.customerPhone}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-          Text(text = "العنوان: ${order.customerAddress}", fontSize = 11.sp, color = Color.DarkGray)
-          Text(text = "إجمالي المنتجات: ${order.totalProductsPrice} ج.م | عمولة التطبيق: ${order.appCommission} ج.م", fontSize = 11.sp, color = GreenPrimary)
-
-          Spacer(modifier = Modifier.height(10.dp))
-
-          // Action buttons depending on order stage
-          when (order.orderStatus) {
-            "NEW" -> {
-              Button(
-                onClick = { viewModel.acknowledgeOrder(order.id) },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("ack_order_${order.id}")
-              ) {
-                Text("تحضير المنتج / قبول الطلب (إيقاف الرنين)")
-              }
-            }
-            "PREPARING" -> {
-              Button(
-                onClick = { selectedOrderIdForShipping = order.id },
-                colors = ButtonDefaults.buttonColors(containerColor = AmberSecondary),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("ship_order_${order.id}")
-              ) {
-                Text("جاري إرسال المنتج (تسجيل بيانات الكابتن)")
-              }
-            }
-            "SHIPPED" -> {
-              Text(
-                text = "🛵 الطلب مع الكابتن: ${order.captainName} (${order.captainPhone})",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = GreenDark
-              )
-              Spacer(modifier = Modifier.height(6.dp))
-              Button(
-                onClick = { viewModel.merchantConfirmDelivered(order.id) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00695C)),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .testTag("delivered_order_${order.id}")
-              ) {
-                Text("تم التسليم للعميل بنجاح")
-              }
-            }
-            "DELIVERED" -> {
-              Surface(
-                color = GreenContainer,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.fillMaxWidth()
-              ) {
-                Text(
-                  text = "✅ تم تسليم الطلب وإضافة الأرباح لمحفظتك",
-                  color = GreenDark,
-                  fontSize = 11.sp,
-                  fontWeight = FontWeight.Bold,
-                  modifier = Modifier.padding(8.dp)
-                )
-              }
-            }
-          }
-        }
-      }
+      MerchantOrderCard(
+        order = order,
+        viewModel = viewModel,
+        onOpenPreparation = { selectedOrderForPreparation = order },
+        onOpenShipping = { selectedOrderIdForShipping = order.id }
+      )
     }
+  }
+
+  // Dialog: Detailed Order Preparation with item types, units, and quantities
+  if (selectedOrderForPreparation != null) {
+    OrderPreparationDialog(
+      order = selectedOrderForPreparation!!,
+      viewModel = viewModel,
+      onStartPreparing = {
+        viewModel.acknowledgeOrder(selectedOrderForPreparation!!.id)
+        selectedOrderForPreparation = null
+      },
+      onShipOrder = {
+        val oId = selectedOrderForPreparation!!.id
+        selectedOrderForPreparation = null
+        selectedOrderIdForShipping = oId
+      },
+      onDismiss = { selectedOrderForPreparation = null }
+    )
   }
 
   if (selectedOrderIdForShipping != null) {
@@ -436,6 +379,359 @@ private fun MerchantOrdersTab(viewModel: AlbakalViewModel) {
       onDismiss = { selectedOrderIdForShipping = null }
     )
   }
+}
+
+@Composable
+private fun MerchantOrderCard(
+  order: OrderEntity,
+  viewModel: AlbakalViewModel,
+  onOpenPreparation: () -> Unit,
+  onOpenShipping: () -> Unit
+) {
+  val items by viewModel.getOrderItems(order.id).collectAsState(initial = emptyList())
+
+  Card(
+    modifier = Modifier.fillMaxWidth(),
+    shape = RoundedCornerShape(14.dp),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+  ) {
+    Column(modifier = Modifier.padding(14.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Text(text = order.orderNumber, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        OrderStatusBadge(status = order.orderStatus)
+      }
+
+      Spacer(modifier = Modifier.height(6.dp))
+      Text(text = "العميل: ${order.customerName} - ${order.customerPhone}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+      Text(text = "العنوان: ${order.customerAddress}", fontSize = 11.sp, color = Color.DarkGray)
+      Text(
+        text = "إجمالي المنتجات: ${order.totalProductsPrice} ج.م | عمولة التطبيق: ${order.appCommission} ج.م",
+        fontSize = 11.sp,
+        color = GreenPrimary
+      )
+
+      // Products & Quantities Breakdown Card on the Order Card
+      if (items.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(
+          shape = RoundedCornerShape(8.dp),
+          color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Text(
+                text = "📦 الأصناف المطلوبة بالتفصيل (${items.size}):",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = GreenDark
+              )
+              Text(
+                text = "إجمالي الكمية: ${items.sumOf { it.quantity }}",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 11.sp,
+                color = Color.DarkGray
+              )
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            items.forEachIndexed { idx, item ->
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Text(
+                  text = "${idx + 1}. ${item.productName}",
+                  fontWeight = FontWeight.SemiBold,
+                  fontSize = 12.sp,
+                  modifier = Modifier.weight(1f)
+                )
+                Surface(
+                  color = GreenPrimary.copy(alpha = 0.12f),
+                  shape = RoundedCornerShape(4.dp)
+                ) {
+                  Text(
+                    text = "الكمية: ${item.quantity} ${item.unit}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = GreenDark,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+
+      Spacer(modifier = Modifier.height(10.dp))
+
+      // Action buttons depending on order stage
+      when (order.orderStatus) {
+        "NEW" -> {
+          Button(
+            onClick = onOpenPreparation,
+            colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("ack_order_${order.id}")
+          ) {
+            Text("📦 جاري التجهيز (فحص نوع وكميات المنتجات)")
+          }
+        }
+        "PREPARING" -> {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            OutlinedButton(
+              onClick = onOpenPreparation,
+              shape = RoundedCornerShape(8.dp),
+              modifier = Modifier.weight(1f)
+            ) {
+              Text("📋 فحص وتجهيز الأصناف", fontSize = 11.sp)
+            }
+            Button(
+              onClick = onOpenShipping,
+              colors = ButtonDefaults.buttonColors(containerColor = AmberSecondary),
+              shape = RoundedCornerShape(8.dp),
+              modifier = Modifier
+                .weight(1f)
+                .testTag("ship_order_${order.id}")
+            ) {
+              Text("🛵 إرسال مع الكابتن", fontSize = 11.sp)
+            }
+          }
+        }
+        "SHIPPED" -> {
+          Text(
+            text = "🛵 الطلب مع الكابتن: ${order.captainName} (${order.captainPhone})",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = GreenDark
+          )
+          Spacer(modifier = Modifier.height(6.dp))
+          Button(
+            onClick = { viewModel.merchantConfirmDelivered(order.id) },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00695C)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("delivered_order_${order.id}")
+          ) {
+            Text("تم التسليم للعميل بنجاح")
+          }
+        }
+        "DELIVERED" -> {
+          Surface(
+            color = GreenContainer,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = "✅ تم تسليم الطلب وإضافة الأرباح لمحفظتك تلقائياً",
+              color = GreenDark,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              modifier = Modifier.padding(8.dp)
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun OrderPreparationDialog(
+  order: OrderEntity,
+  viewModel: AlbakalViewModel,
+  onStartPreparing: () -> Unit,
+  onShipOrder: () -> Unit,
+  onDismiss: () -> Unit
+) {
+  val items by viewModel.getOrderItems(order.id).collectAsState(initial = emptyList())
+  val preparedCheckMap = remember { mutableStateMapOf<String, Boolean>() }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text("تجهيز الطلب: ${order.orderNumber}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+          Text("فحص المنتجات والكميات المطلوبة بدقة", fontSize = 11.sp, color = Color.Gray)
+        }
+        OrderStatusBadge(status = order.orderStatus)
+      }
+    },
+    text = {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        // Customer Details Box
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+        ) {
+          Column(modifier = Modifier.padding(10.dp)) {
+            Text("👤 العميل: ${order.customerName} - ${order.customerPhone}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("📍 العنوان: ${order.customerAddress}", fontSize = 11.sp, color = Color.DarkGray)
+            Text("💳 طريقة الدفع: ${order.paymentMethod}", fontSize = 11.sp, color = Color.DarkGray)
+          }
+        }
+
+        Text(
+          text = "📋 قائمة المنتجات والكميات المطلوب تجهيزها (${items.size}):",
+          fontWeight = FontWeight.Bold,
+          fontSize = 13.sp,
+          color = GreenDark
+        )
+
+        if (items.isEmpty()) {
+          Text("جاري استدعاء تفاصيل البضاعة...", fontSize = 12.sp, color = Color.Gray)
+        } else {
+          items.forEachIndexed { index, item ->
+            val isChecked = preparedCheckMap[item.id] ?: false
+            Card(
+              shape = RoundedCornerShape(10.dp),
+              colors = CardDefaults.cardColors(
+                containerColor = if (isChecked) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.surface
+              ),
+              border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (isChecked) GreenPrimary else Color.LightGray.copy(alpha = 0.6f)
+              ),
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable { preparedCheckMap[item.id] = !isChecked }
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Checkbox(
+                  checked = isChecked,
+                  onCheckedChange = { preparedCheckMap[item.id] = it },
+                  colors = CheckboxDefaults.colors(checkedColor = GreenPrimary)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = "${index + 1}. ${item.productName}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                  )
+                  Spacer(modifier = Modifier.height(3.dp))
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                      color = AmberSecondary.copy(alpha = 0.15f),
+                      shape = RoundedCornerShape(4.dp)
+                    ) {
+                      Text(
+                        text = "الكمية: ${item.quantity} ${item.unit}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = Color(0xFFE65100),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                      )
+                    }
+                    Text(
+                      text = "سعر الوحدة: ${item.unitPrice} ج.م",
+                      fontSize = 11.sp,
+                      color = Color.Gray
+                    )
+                  }
+                  Text(
+                    text = "الإجمالي: ${item.totalPrice} ج.م",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp,
+                    color = GreenPrimary
+                  )
+                }
+                if (isChecked) {
+                  Text("جاهز ✓", color = GreenDark, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                }
+              }
+            }
+          }
+        }
+
+        // Summary Bar
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(containerColor = GreenContainer)
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column {
+              Text("إجمالي البضاعة: ${order.totalProductsPrice} ج.م", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = GreenDark)
+              Text("عمولة المنصة: ${order.appCommission} ج.م (تُحسب عند التسليم)", fontSize = 10.sp, color = Color.DarkGray)
+            }
+            Text(
+              text = "المكتمل: ${preparedCheckMap.count { it.value }}/${items.size}",
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+              color = GreenDark
+            )
+          }
+        }
+      }
+    },
+    confirmButton = {
+      if (order.orderStatus == "NEW") {
+        Button(
+          onClick = onStartPreparing,
+          colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary),
+          shape = RoundedCornerShape(8.dp)
+        ) {
+          Text("بدء التجهيز وإيقاف التنبيه ✅")
+        }
+      } else if (order.orderStatus == "PREPARING") {
+        Button(
+          onClick = onShipOrder,
+          colors = ButtonDefaults.buttonColors(containerColor = AmberSecondary),
+          shape = RoundedCornerShape(8.dp)
+        ) {
+          Text("جاهز للشحن مع الكابتن 🛵")
+        }
+      } else {
+        Button(onClick = onDismiss) {
+          Text("حسناً")
+        }
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("إغلاق")
+      }
+    }
+  )
 }
 
 @Composable
@@ -544,26 +840,47 @@ private fun MerchantDebtAndFinancialsTab(viewModel: AlbakalViewModel) {
       }
     }
 
-    // Current Debt Card
+    // Current Debt / Credit Card
     item {
+      val debt = currentUser?.currentDebt ?: 0.0
+      val isCredit = debt < 0.0
       Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-          containerColor = if ((currentUser?.currentDebt ?: 0.0) > 0) Color(0xFFFFEBEE) else MaterialTheme.colorScheme.surface
+          containerColor = if (isCredit) Color(0xFFE8F5E9) else if (debt > 0.0) Color(0xFFFFEBEE) else MaterialTheme.colorScheme.surface
         ),
-        border = androidx.compose.foundation.BorderStroke(1.dp, if ((currentUser?.currentDebt ?: 0.0) > 0) Color(0xFFEF5350) else Color.LightGray)
+        border = androidx.compose.foundation.BorderStroke(
+          1.dp,
+          if (isCredit) GreenPrimary else if (debt > 0.0) Color(0xFFEF5350) else Color.LightGray
+        )
       ) {
         Column(modifier = Modifier.padding(16.dp)) {
-          Text(text = "المديونية الحالية (عمولات التطبيق المستحقة):", fontSize = 13.sp)
-          Text(
-            text = "${currentUser?.currentDebt ?: 0.0} ج.م",
-            fontWeight = FontWeight.Bold,
-            fontSize = 22.sp,
-            color = if ((currentUser?.currentDebt ?: 0.0) > 0) Color(0xFFC62828) else GreenPrimary
-          )
-          Spacer(modifier = Modifier.height(6.dp))
-          Text(text = "نسبة عمولة المنصة: ${settings.commissionRatePercent}% من قيمة المبيعات.", fontSize = 11.sp, color = Color.Gray)
+          if (isCredit) {
+            Text(text = "رصيد المتجر الحالي (رصيد دائن بالموجب) 🌟:", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = GreenDark)
+            Text(
+              text = "+${String.format("%.2f", -debt)} ج.م",
+              fontWeight = FontWeight.Bold,
+              fontSize = 24.sp,
+              color = GreenPrimary
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+              text = "لديك رصيد إيجابي دائن لدى المنصة، سيتم خصم عمولات الطلبات القادمة منه تلقائياً دون أي مديونية مستحقة.",
+              fontSize = 11.sp,
+              color = Color.DarkGray
+            )
+          } else {
+            Text(text = "المديونية الحالية (عمولات التطبيق المستحقة):", fontSize = 13.sp)
+            Text(
+              text = "${debt} ج.م",
+              fontWeight = FontWeight.Bold,
+              fontSize = 22.sp,
+              color = if (debt > 0.0) Color(0xFFC62828) else GreenPrimary
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(text = "نسبة عمولة المنصة: ${settings.commissionRatePercent}% من قيمة المبيعات (تُحسب تلقائياً عند التسليم).", fontSize = 11.sp, color = Color.Gray)
+          }
 
           Spacer(modifier = Modifier.height(12.dp))
           Button(
@@ -640,7 +957,10 @@ private fun RepayDebtDialog(
   val settings by viewModel.appSettings.collectAsState()
   val currentUser by viewModel.currentUser.collectAsState()
 
-  var amountText by remember { mutableStateOf((currentUser?.currentDebt ?: 0.0).toString()) }
+  val currentDebt = currentUser?.currentDebt ?: 0.0
+
+  // Box 2: Starts EMPTY as requested
+  var amountText by remember { mutableStateOf("") }
   var selectedMethod by remember { mutableStateOf("VODAFONE_CASH") }
   var proofNote by remember { mutableStateOf("") }
   var pickedProofPath by remember { mutableStateOf<String?>(null) }
@@ -659,16 +979,58 @@ private fun RepayDebtDialog(
     onDismissRequest = onDismiss,
     title = { Text("سداد مديونية التاجر", fontWeight = FontWeight.Bold) },
     text = {
-      Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        Text("طرق السداد المتاحة للإدارة:", fontSize = 12.sp)
+      Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Text("طرق السداد المعتمدة لدى الإدارة:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         Text("• فودافون كاش: ${settings.vodafoneCashNumber}", fontSize = 12.sp, color = GreenPrimary)
         Text("• إنستا باي: ${settings.instaPayHandle}", fontSize = 12.sp, color = GreenPrimary)
 
-        Spacer(modifier = Modifier.height(10.dp))
+        // 1. BOX 1: Current Debt Display
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = if (currentDebt > 0.0) Color(0xFFFFEBEE) else Color(0xFFE8F5E9)
+          ),
+          border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (currentDebt > 0.0) Color(0xFFEF5350) else GreenPrimary
+          ),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+              text = "1. المديونية الحالية المستحقة:",
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+              color = Color.DarkGray
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            if (currentDebt < 0.0) {
+              Text(
+                text = "رصيد دائن بالموجب: +${String.format("%.2f", -currentDebt)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = GreenDark
+              )
+            } else {
+              Text(
+                text = "${String.format("%.2f", currentDebt)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp,
+                color = if (currentDebt > 0.0) Color(0xFFC62828) else GreenDark
+              )
+            }
+          }
+        }
+
+        // 2. BOX 2: Empty Input for Amount to Pay
         OutlinedTextField(
           value = amountText,
           onValueChange = { amountText = it },
-          label = { Text("المبلغ المراد سداده (ج.م)") },
+          label = { Text("2. المبلغ المراد سداده (ج.م) *") },
+          placeholder = { Text("اكتب هنا المبلغ المراد دفعه...") },
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
           singleLine = true,
           modifier = Modifier
@@ -676,7 +1038,83 @@ private fun RepayDebtDialog(
             .testTag("repay_amount_input")
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        // 3. BOX 3: Dynamic Calculation (Remaining Debt or Positive Credit Balance)
+        val enteredAmt = amountText.toDoubleOrNull() ?: 0.0
+        val remaining = currentDebt - enteredAmt
+        val isOverpaid = enteredAmt > currentDebt
+
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = if (amountText.isBlank()) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            else if (isOverpaid) Color(0xFFE8F5E9)
+            else Color(0xFFFFF8E1)
+          ),
+          border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (amountText.isBlank()) Color.LightGray
+            else if (isOverpaid) GreenPrimary
+            else AmberSecondary
+          ),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.padding(12.dp)) {
+            if (amountText.isBlank()) {
+              Text(
+                text = "3. المتبقي بعد السداد:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = Color.DarkGray
+              )
+              Text(
+                text = "يرجى كتابة المبلغ في الخانة أعلاه لعرض الحساب الفوري.",
+                fontSize = 11.sp,
+                color = Color.Gray
+              )
+            } else if (isOverpaid) {
+              Text(
+                text = "3. رصيد بالموجب (دائن للمتجر) 🌟:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = GreenDark
+              )
+              Text(
+                text = "+${String.format("%.2f", enteredAmt - currentDebt)} ج.م (رصيد دائن)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = GreenPrimary
+              )
+              Spacer(modifier = Modifier.height(2.dp))
+              Text(
+                text = "دفعت مبلغاً أزيد من المديونية بمقدار (+${String.format("%.2f", enteredAmt - currentDebt)} ج.م)؛ سيظهر كرصيد بالموجب في حسابك ويُخصم من أي عمولات قادمة تلقائياً.",
+                fontSize = 11.sp,
+                color = GreenDark
+              )
+            } else {
+              Text(
+                text = "3. المتبقي من المديونية بعد السداد:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = Color(0xFFE65100)
+              )
+              Text(
+                text = "${String.format("%.2f", remaining)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = if (remaining > 0.0) Color(0xFFC62828) else GreenDark
+              )
+              Spacer(modifier = Modifier.height(2.dp))
+              Text(
+                text = "تم حساب الخصم: (${String.format("%.2f", currentDebt)} - ${String.format("%.2f", enteredAmt)} = ${String.format("%.2f", remaining)} ج.م)",
+                fontSize = 11.sp,
+                color = Color.DarkGray
+              )
+            }
+          }
+        }
+
+        // Method Selection
+        Text("طريقة التحويل:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         Row(verticalAlignment = Alignment.CenterVertically) {
           RadioButton(selected = selectedMethod == "VODAFONE_CASH", onClick = { selectedMethod = "VODAFONE_CASH" })
           Text("فودافون كاش", fontSize = 12.sp)
@@ -685,7 +1123,6 @@ private fun RepayDebtDialog(
           Text("إنستا باي", fontSize = 12.sp)
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
         // Photo Proof Picker
         OutlinedButton(
           onClick = {
@@ -699,7 +1136,6 @@ private fun RepayDebtDialog(
         }
 
         if (pickedProofPath != null) {
-          Spacer(modifier = Modifier.height(8.dp))
           Box(
             modifier = Modifier
               .fillMaxWidth()
@@ -716,11 +1152,10 @@ private fun RepayDebtDialog(
           }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
           value = proofNote,
           onValueChange = { proofNote = it },
-          label = { Text("بيانات التحويل أو رقم العملية كإثبات") },
+          label = { Text("بيانات التحويل أو رقم العملية كإثبات إضافي") },
           minLines = 2,
           modifier = Modifier
             .fillMaxWidth()
@@ -733,7 +1168,7 @@ private fun RepayDebtDialog(
         onClick = {
           val amt = amountText.toDoubleOrNull() ?: 0.0
           if (amt <= 0.0) {
-            viewModel.showMessage("يرجى إدخال مبلغ صحيح")
+            viewModel.showMessage("يرجى إدخال مبلغ صحيح في خانة المبلغ المراد سداده")
           } else {
             viewModel.submitDebtPayment(amt, selectedMethod, pickedProofPath, proofNote) {
               onDismiss()

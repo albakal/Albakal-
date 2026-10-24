@@ -97,7 +97,8 @@ data class CartItemEntity(
   val merchantName: String,
   val price: Double,
   val quantity: Int,
-  val imageUrl: String
+  val imageUrl: String,
+  val unit: String = "قطعة"
 )
 
 @Entity(tableName = "orders")
@@ -135,7 +136,8 @@ data class OrderItemEntity(
   val productName: String,
   val quantity: Int,
   val unitPrice: Double,
-  val totalPrice: Double
+  val totalPrice: Double,
+  val unit: String = "قطعة"
 )
 
 @Entity(tableName = "debt_payment_requests")

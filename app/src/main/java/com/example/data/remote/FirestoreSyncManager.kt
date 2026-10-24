@@ -638,7 +638,8 @@ class FirestoreSyncManager(
     "productName" to i.productName,
     "quantity" to i.quantity,
     "unitPrice" to i.unitPrice,
-    "totalPrice" to i.totalPrice
+    "totalPrice" to i.totalPrice,
+    "unit" to i.unit
   )
 
   private fun docToOrderItem(doc: DocumentSnapshot): OrderItemEntity? {
@@ -649,6 +650,7 @@ class FirestoreSyncManager(
     val quantity = doc.getLong("quantity")?.toInt() ?: 1
     val unitPrice = doc.getDouble("unitPrice") ?: 0.0
     val totalPrice = doc.getDouble("totalPrice") ?: (unitPrice * quantity)
+    val unit = doc.getString("unit") ?: "قطعة"
 
     return OrderItemEntity(
       id = id,
@@ -657,7 +659,8 @@ class FirestoreSyncManager(
       productName = productName,
       quantity = quantity,
       unitPrice = unitPrice,
-      totalPrice = totalPrice
+      totalPrice = totalPrice,
+      unit = unit
     )
   }
 

@@ -286,7 +286,8 @@ class AlbakalRepository(
     merchantName: String,
     price: Double,
     quantity: Int,
-    imageUrl: String
+    imageUrl: String,
+    unit: String = "قطعة"
   ) {
     val id = "${customerId}_${productId}"
     dao.insertCartItem(
@@ -299,7 +300,8 @@ class AlbakalRepository(
         merchantName = merchantName,
         price = price,
         quantity = quantity,
-        imageUrl = imageUrl
+        imageUrl = imageUrl,
+        unit = unit
       )
     )
   }
@@ -369,21 +371,14 @@ class AlbakalRepository(
           productName = item.productName,
           quantity = item.quantity,
           unitPrice = item.price,
-          totalPrice = item.price * item.quantity
+          totalPrice = item.price * item.quantity,
+          unit = item.unit
         )
       }
       dao.insertOrderItems(orderItems)
 
       // Sync to cloud Firestore
       syncManager?.pushOrder(order, orderItems)
-
-      // Update merchant debt with app commission
-      val merchant = dao.getUserById(mId)
-      if (merchant != null) {
-        val updatedMerchant = merchant.copy(currentDebt = merchant.currentDebt + appCommission)
-        dao.updateUser(updatedMerchant)
-        syncManager?.pushUser(updatedMerchant)
-      }
       createdOrderIds.add(orderNumber)
     }
 
@@ -416,6 +411,7 @@ class AlbakalRepository(
 
   suspend fun merchantConfirmDelivered(orderId: String) {
     val order = dao.getOrderById(orderId) ?: return
+    val wasDelivered = order.orderStatus == "DELIVERED"
     val updated = order.copy(
       merchantConfirmedDelivered = true,
       orderStatus = "DELIVERED",
@@ -424,17 +420,14 @@ class AlbakalRepository(
     dao.updateOrder(updated)
     syncManager?.updateOrderStatus(updated)
 
-    // Update merchant total earnings
-    val merchant = dao.getUserById(order.merchantId)
-    if (merchant != null) {
-      val updatedMerchant = merchant.copy(totalEarnings = merchant.totalEarnings + order.totalProductsPrice)
-      dao.updateUser(updatedMerchant)
-      syncManager?.pushUser(updatedMerchant)
+    if (!wasDelivered) {
+      applyDeliveryFinancials(order)
     }
   }
 
   suspend fun customerConfirmDelivered(orderId: String) {
     val order = dao.getOrderById(orderId) ?: return
+    val wasDelivered = order.orderStatus == "DELIVERED"
     val updated = order.copy(
       customerConfirmedDelivered = true,
       orderStatus = "DELIVERED",
@@ -442,6 +435,24 @@ class AlbakalRepository(
     )
     dao.updateOrder(updated)
     syncManager?.updateOrderStatus(updated)
+
+    if (!wasDelivered) {
+      applyDeliveryFinancials(order)
+    }
+  }
+
+  private suspend fun applyDeliveryFinancials(order: OrderEntity) {
+    val merchant = dao.getUserById(order.merchantId) ?: return
+    // Automatically calculate sales value into monthly/total earnings,
+    // and automatically calculate app commission into current debt
+    val newEarnings = merchant.totalEarnings + order.totalProductsPrice
+    val newDebt = merchant.currentDebt + order.appCommission
+    val updatedMerchant = merchant.copy(
+      totalEarnings = newEarnings,
+      currentDebt = newDebt
+    )
+    dao.updateUser(updatedMerchant)
+    syncManager?.pushUser(updatedMerchant)
   }
 
   // Debt Payments
@@ -477,11 +488,38 @@ class AlbakalRepository(
 
     val merchant = dao.getUserById(payment.merchantId)
     if (merchant != null) {
-      val newDebt = (merchant.currentDebt - payment.amount).coerceAtLeast(0.0)
+      // Calculate remaining debt. If paid amount > debt, currentDebt becomes negative (positive credit balance)
+      val newDebt = merchant.currentDebt - payment.amount
       val updatedMerchant = merchant.copy(currentDebt = newDebt)
       dao.updateUser(updatedMerchant)
       syncManager?.pushUser(updatedMerchant)
     }
+  }
+
+  suspend fun adminSettleMerchantDebt(
+    merchantId: String,
+    amount: Double,
+    notes: String? = null
+  ) {
+    val merchant = dao.getUserById(merchantId) ?: return
+    val newDebt = merchant.currentDebt - amount
+    val updatedMerchant = merchant.copy(currentDebt = newDebt)
+    dao.updateUser(updatedMerchant)
+    syncManager?.pushUser(updatedMerchant)
+
+    val req = DebtPaymentRequestEntity(
+      id = "admin_settle_" + UUID.randomUUID().toString().take(8),
+      merchantId = merchantId,
+      merchantName = merchant.name,
+      amount = amount,
+      paymentMethod = "تسوية إدارة / كاش",
+      proofImageUrl = null,
+      notes = notes ?: "تسوية مديونية مباشرة عبر لوحة التحكم",
+      status = "APPROVED",
+      reviewedAt = System.currentTimeMillis()
+    )
+    dao.insertDebtPayment(req)
+    syncManager?.pushDebtPayment(req)
   }
 
   suspend fun rejectDebtPayment(payment: DebtPaymentRequestEntity) {

@@ -183,7 +183,7 @@ fun AdminDashboardScreen(viewModel: AlbakalViewModel) {
       Box(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         when (currentTabTitle) {
           "العملاء" -> AdminCustomersSection(viewModel)
-          "التجار" -> AdminMerchantsSection(viewModel, canBan = isSuperAdmin || perms.canBanMerchants)
+          "التجار" -> AdminMerchantsSection(viewModel, canBan = isSuperAdmin || perms.canBanMerchants, canDebts = isSuperAdmin || perms.canManageDebts)
           "المشرفين" -> AdminSupervisorsSection(viewModel)
           "المنتجات والأقسام" -> AdminProductsSection(viewModel)
           "الطلبات" -> AdminOrdersSection(viewModel)
@@ -285,11 +285,12 @@ private fun AdminCustomersSection(viewModel: AlbakalViewModel) {
 
 // 2. MERCHANTS MANAGEMENT & BANNING
 @Composable
-private fun AdminMerchantsSection(viewModel: AlbakalViewModel, canBan: Boolean) {
+private fun AdminMerchantsSection(viewModel: AlbakalViewModel, canBan: Boolean, canDebts: Boolean) {
   val allUsers by viewModel.allUsers.collectAsState()
   val merchants = remember(allUsers) { allUsers.filter { it.role == "MERCHANT" } }
 
   var banMerchantTarget by remember { mutableStateOf<UserEntity?>(null) }
+  var settleDebtMerchantTarget by remember { mutableStateOf<UserEntity?>(null) }
 
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
@@ -321,12 +322,21 @@ private fun AdminMerchantsSection(viewModel: AlbakalViewModel, canBan: Boolean) 
               Text(text = merchant.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
               Text(text = "${merchant.phone} • ${merchant.email}", fontSize = 11.sp, color = Color.Gray)
               Text(text = "${merchant.governorate} - ${merchant.district}", fontSize = 11.sp, color = Color.DarkGray)
-              Text(
-                text = "المديونية: ${merchant.currentDebt} ج.م | الأرباح: ${merchant.totalEarnings} ج.م",
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                color = GreenPrimary
-              )
+              if (merchant.currentDebt < 0.0) {
+                Text(
+                  text = "رصيد دائن بالموجب: +${String.format("%.2f", -merchant.currentDebt)} ج.م | الأرباح: ${merchant.totalEarnings} ج.م",
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.sp,
+                  color = GreenPrimary
+                )
+              } else {
+                Text(
+                  text = "المديونية: ${merchant.currentDebt} ج.م | الأرباح: ${merchant.totalEarnings} ج.م",
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.sp,
+                  color = if (merchant.currentDebt > 0.0) Color(0xFFC62828) else GreenPrimary
+                )
+              }
             }
             Surface(
               shape = RoundedCornerShape(8.dp),
@@ -382,20 +392,40 @@ private fun AdminMerchantsSection(viewModel: AlbakalViewModel, canBan: Boolean) 
               ) {
                 Text("فك الحظر وإعادة المتجر", fontSize = 11.sp)
               }
-            } else if (canBan) {
-              OutlinedButton(
-                onClick = { banMerchantTarget = merchant },
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
-                modifier = Modifier.weight(1f)
-              ) {
-                Text("حظر التاجر", fontSize = 11.sp)
+            } else {
+              if (canDebts) {
+                Button(
+                  onClick = { settleDebtMerchantTarget = merchant },
+                  colors = ButtonDefaults.buttonColors(containerColor = AmberSecondary),
+                  shape = RoundedCornerShape(8.dp),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Text("سداد مديونية تاجر", fontSize = 11.sp)
+                }
+              }
+              if (canBan) {
+                OutlinedButton(
+                  onClick = { banMerchantTarget = merchant },
+                  shape = RoundedCornerShape(8.dp),
+                  colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Text("حظر التاجر", fontSize = 11.sp)
+                }
               }
             }
           }
         }
       }
     }
+  }
+
+  if (settleDebtMerchantTarget != null) {
+    AdminSettleMerchantDebtDialog(
+      merchant = settleDebtMerchantTarget!!,
+      viewModel = viewModel,
+      onDismiss = { settleDebtMerchantTarget = null }
+    )
   }
 
   if (banMerchantTarget != null) {
@@ -408,6 +438,181 @@ private fun AdminMerchantsSection(viewModel: AlbakalViewModel, canBan: Boolean) 
       onDismiss = { banMerchantTarget = null }
     )
   }
+}
+
+@Composable
+private fun AdminSettleMerchantDebtDialog(
+  merchant: UserEntity,
+  viewModel: AlbakalViewModel,
+  onDismiss: () -> Unit
+) {
+  val currentDebt = merchant.currentDebt
+  // Box 2: Starts empty as requested
+  var amountText by remember { mutableStateOf("") }
+  var notesText by remember { mutableStateOf("") }
+
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("سداد مديونية تاجر (${merchant.name})", fontWeight = FontWeight.Bold, fontSize = 15.sp) },
+    text = {
+      Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        // 1. BOX 1: Current Debt Display
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = if (currentDebt > 0.0) Color(0xFFFFEBEE) else Color(0xFFE8F5E9)
+          ),
+          border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (currentDebt > 0.0) Color(0xFFEF5350) else GreenPrimary
+          ),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+              text = "1. المديونية الحالية المسجلة:",
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+              color = Color.DarkGray
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            if (currentDebt < 0.0) {
+              Text(
+                text = "رصيد دائن بالموجب: +${String.format("%.2f", -currentDebt)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = GreenDark
+              )
+            } else {
+              Text(
+                text = "${String.format("%.2f", currentDebt)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp,
+                color = if (currentDebt > 0.0) Color(0xFFC62828) else GreenDark
+              )
+            }
+          }
+        }
+
+        // 2. BOX 2: Empty Input for Amount to Pay
+        OutlinedTextField(
+          value = amountText,
+          onValueChange = { amountText = it },
+          label = { Text("2. المبلغ المراد سداده (ج.م) *") },
+          placeholder = { Text("أدخل المبلغ المسدد...") },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        // 3. BOX 3: Dynamic Calculation (Remaining or Positive Credit Balance)
+        val enteredAmt = amountText.toDoubleOrNull() ?: 0.0
+        val remaining = currentDebt - enteredAmt
+        val isOverpaid = enteredAmt > currentDebt
+
+        Card(
+          shape = RoundedCornerShape(10.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = if (amountText.isBlank()) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            else if (isOverpaid) Color(0xFFE8F5E9)
+            else Color(0xFFFFF8E1)
+          ),
+          border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (amountText.isBlank()) Color.LightGray
+            else if (isOverpaid) GreenPrimary
+            else AmberSecondary
+          ),
+          modifier = Modifier.fillMaxWidth()
+        ) {
+          Column(modifier = Modifier.padding(12.dp)) {
+            if (amountText.isBlank()) {
+              Text(
+                text = "3. المتبقي بعد السداد:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = Color.DarkGray
+              )
+              Text(
+                text = "أدخل المبلغ في الخانة أعلاه لعرض الحساب الفوري.",
+                fontSize = 11.sp,
+                color = Color.Gray
+              )
+            } else if (isOverpaid) {
+              Text(
+                text = "3. رصيد بالموجب (دائن للمتجر) 🌟:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = GreenDark
+              )
+              Text(
+                text = "+${String.format("%.2f", enteredAmt - currentDebt)} ج.م (رصيد دائن)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = GreenPrimary
+              )
+              Spacer(modifier = Modifier.height(2.dp))
+              Text(
+                text = "تم دفع مبلغ أكبر من المديونية بمقدار (+${String.format("%.2f", enteredAmt - currentDebt)} ج.م)؛ سيصبح رصيداً بالموجب لصالح التاجر يخصم من أي عمولات قادمة.",
+                fontSize = 11.sp,
+                color = GreenDark
+              )
+            } else {
+              Text(
+                text = "3. المتبقي من المديونية بعد السداد:",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = Color(0xFFE65100)
+              )
+              Text(
+                text = "${String.format("%.2f", remaining)} ج.م",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = if (remaining > 0.0) Color(0xFFC62828) else GreenDark
+              )
+              Spacer(modifier = Modifier.height(2.dp))
+              Text(
+                text = "(${String.format("%.2f", currentDebt)} - ${String.format("%.2f", enteredAmt)} = ${String.format("%.2f", remaining)} ج.م)",
+                fontSize = 11.sp,
+                color = Color.DarkGray
+              )
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = notesText,
+          onValueChange = { notesText = it },
+          label = { Text("ملاحظات / وسيلة السداد (كاش، فودافون كاش، تحويل...)") },
+          minLines = 2,
+          modifier = Modifier.fillMaxWidth()
+        )
+      }
+    },
+    confirmButton = {
+      Button(
+        onClick = {
+          val amt = amountText.toDoubleOrNull() ?: 0.0
+          if (amt <= 0.0) {
+            viewModel.showMessage("يرجى إدخال مبلغ صحيح")
+          } else {
+            viewModel.adminSettleMerchantDebt(merchant.id, amt, notesText) {
+              onDismiss()
+            }
+          }
+        },
+        colors = ButtonDefaults.buttonColors(containerColor = GreenPrimary)
+      ) {
+        Text("اعتماد السداد وتحديث رصيد التاجر فوراً")
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) { Text("إلغاء") }
+    }
+  )
 }
 
 @Composable
@@ -1004,6 +1209,7 @@ private fun AdminOrdersSection(viewModel: AlbakalViewModel) {
 private fun AdminFinancialsSection(viewModel: AlbakalViewModel) {
   val settings by viewModel.appSettings.collectAsState()
   val debtPayments by viewModel.allDebtPayments.collectAsState()
+  val allUsers by viewModel.allUsers.collectAsState()
   var viewingProofImage by remember { mutableStateOf<String?>(null) }
 
   var shippingFeeText by remember(settings) { mutableStateOf(settings.shippingFee.toString()) }
@@ -1189,6 +1395,35 @@ private fun AdminFinancialsSection(viewModel: AlbakalViewModel) {
                   color = Color.Gray
                 )
               }
+            }
+          }
+
+          val merchant = allUsers.find { it.id == pay.merchantId }
+          if (merchant != null) {
+            val debt = merchant.currentDebt
+            val remaining = debt - pay.amount
+            Spacer(modifier = Modifier.height(4.dp))
+            if (pay.amount > debt) {
+              Surface(
+                color = GreenContainer,
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Text(
+                  text = "🌟 السداد يتجاوز المديونية الحالية (${debt} ج.م) ويمنح التاجر رصيداً بالموجب (+${String.format("%.2f", pay.amount - debt)} ج.م)",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = GreenDark,
+                  modifier = Modifier.padding(6.dp)
+                )
+              }
+            } else {
+              Text(
+                text = "المديونية الحالية: ${debt} ج.م | المتبقي بعد الاعتماد: ${String.format("%.2f", remaining)} ج.م",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.DarkGray
+              )
             }
           }
 

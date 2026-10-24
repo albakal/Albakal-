@@ -27,7 +27,7 @@ import java.util.UUID
     PasswordResetRequestEntity::class,
     AppSettingsEntity::class
   ],
-  version = 2,
+  version = 3,
   exportSchema = false
 )
 abstract class AlbakalDatabase : RoomDatabase() {

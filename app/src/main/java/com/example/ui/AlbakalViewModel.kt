@@ -9,6 +9,7 @@ import com.example.data.model.CartItemEntity
 import com.example.data.model.DebtPaymentRequestEntity
 import com.example.data.model.GovernorateAreaEntity
 import com.example.data.model.OrderEntity
+import com.example.data.model.OrderItemEntity
 import com.example.data.model.PasswordResetRequestEntity
 import com.example.data.model.ProductCategoryEntity
 import com.example.data.model.ProductEntity
@@ -18,6 +19,7 @@ import com.example.data.model.SupportComplaintEntity
 import com.example.data.model.UserEntity
 import com.example.data.repository.AlbakalRepository
 import com.example.util.OrderAlarmManager
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -217,7 +219,8 @@ class AlbakalViewModel(application: Application) : AndroidViewModel(application)
         merchantName = product.merchantName,
         price = price,
         quantity = qty,
-        imageUrl = product.imageUrl
+        imageUrl = product.imageUrl,
+        unit = product.unit
       )
       showMessage("تمت إضافة ${product.name} إلى السلة")
     }
@@ -336,10 +339,20 @@ class AlbakalViewModel(application: Application) : AndroidViewModel(application)
     }
   }
 
+  fun getOrderItems(orderId: String): Flow<List<OrderItemEntity>> = repository.getOrderItems(orderId)
+
   fun approveDebtPayment(payment: DebtPaymentRequestEntity) {
     viewModelScope.launch {
       repository.approveDebtPayment(payment.id, payment)
       showMessage("تم اعتماد سداد المديونية وتحديث رصيد التاجر")
+    }
+  }
+
+  fun adminSettleMerchantDebt(merchantId: String, amount: Double, notes: String? = null, onComplete: () -> Unit = {}) {
+    viewModelScope.launch {
+      repository.adminSettleMerchantDebt(merchantId, amount, notes)
+      showMessage("تمت تسوية مديونية التاجر بنجاح وتحديث الرصيد فوراً")
+      onComplete()
     }
   }
 
