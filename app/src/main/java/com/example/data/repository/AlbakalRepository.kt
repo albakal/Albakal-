@@ -1,32 +1,89 @@
 package com.example.data.repository
 
 import com.example.data.local.AppDao
-import com.example.data.model.AppSettingsEntity
-import com.example.data.model.CartItemEntity
-import com.example.data.model.DebtPaymentRequestEntity
-import com.example.data.model.GovernorateAreaEntity
-import com.example.data.model.OrderEntity
-import com.example.data.model.OrderItemEntity
-import com.example.data.model.PasswordResetRequestEntity
-import com.example.data.model.ProductCategoryEntity
-import com.example.data.model.ProductEntity
-import com.example.data.model.SponsoredAdEntity
-import com.example.data.model.SupervisorPermissionEntity
-import com.example.data.model.SupportComplaintEntity
-import com.example.data.model.UserEntity
+import com.example.data.model.*
+import com.example.data.remote.FirestoreSyncManager
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
-class AlbakalRepository(private val dao: AppDao) {
+class AlbakalRepository(
+  private val dao: AppDao,
+  private val syncManager: FirestoreSyncManager? = null
+) {
 
   // Users & Auth
   suspend fun login(emailOrPhone: String, pass: String): Result<UserEntity> {
     val clean = emailOrPhone.trim()
-    val user = if (clean.contains("@")) {
+    var user = if (clean.contains("@")) {
       dao.getUserByEmail(clean)
     } else {
       dao.getUserByPhone(clean)
-    } ?: return Result.failure(Exception("الحساب غير موجود، يرجى التأكد من البيانات المدخلة أو إنشاء حساب جديد"))
+    }
+
+    // If not found in local Room yet (fresh device), try fetching directly from Firestore
+    if (user == null && syncManager?.getFirestore() != null) {
+      try {
+        val field = if (clean.contains("@")) "email" else "phone"
+        val query = syncManager.getFirestore()!!.collection("users")
+          .whereEqualTo(field, clean)
+          .limit(1)
+          .get()
+          .await()
+        if (!query.isEmpty) {
+          val doc = query.documents.first()
+          val id = doc.getString("id") ?: doc.id
+          val name = doc.getString("name") ?: ""
+          val email = doc.getString("email") ?: ""
+          val phone = doc.getString("phone") ?: ""
+          val password = doc.getString("password") ?: ""
+          val role = doc.getString("role") ?: "CUSTOMER"
+          val status = doc.getString("status") ?: "PENDING_APPROVAL"
+          val banReason = doc.getString("banReason")
+          val governorate = doc.getString("governorate") ?: ""
+          val district = doc.getString("district") ?: ""
+          val street = doc.getString("street") ?: ""
+          val apartment = doc.getString("apartment") ?: ""
+          val floor = doc.getString("floor") ?: ""
+          val monthlySubscriptionActive = doc.getBoolean("monthlySubscriptionActive") ?: false
+          val subscriptionExpiresAt = doc.getLong("subscriptionExpiresAt") ?: 0L
+          val currentDebt = doc.getDouble("currentDebt") ?: 0.0
+          val totalEarnings = doc.getDouble("totalEarnings") ?: 0.0
+          val honorCodeAccepted = doc.getBoolean("honorCodeAccepted") ?: false
+          val createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+
+          val fetchedUser = UserEntity(
+            id = id,
+            name = name,
+            email = email,
+            phone = phone,
+            password = password,
+            role = role,
+            status = status,
+            banReason = banReason,
+            governorate = governorate,
+            district = district,
+            street = street,
+            apartment = apartment,
+            floor = floor,
+            monthlySubscriptionActive = monthlySubscriptionActive,
+            subscriptionExpiresAt = subscriptionExpiresAt,
+            currentDebt = currentDebt,
+            totalEarnings = totalEarnings,
+            honorCodeAccepted = honorCodeAccepted,
+            createdAt = createdAt
+          )
+          dao.insertUser(fetchedUser)
+          user = fetchedUser
+        }
+      } catch (e: Exception) {
+        // Fall back to local check result
+      }
+    }
+
+    if (user == null) {
+      return Result.failure(Exception("الحساب غير موجود، يرجى التأكد من البيانات المدخلة أو إنشاء حساب جديد"))
+    }
 
     if (user.password != pass) {
       return Result.failure(Exception("كلمة المرور غير صحيحة"))
@@ -49,7 +106,7 @@ class AlbakalRepository(private val dao: AppDao) {
   }
 
   suspend fun registerUser(user: UserEntity): Result<Unit> {
-    // Check duplicate email or phone
+    // Check duplicate email or phone locally
     val existingEmail = dao.getUserByEmail(user.email.trim())
     if (existingEmail != null) {
       return Result.failure(Exception("البريد الإلكتروني مسجل مسبقاً في النظام"))
@@ -58,7 +115,13 @@ class AlbakalRepository(private val dao: AppDao) {
     if (existingPhone != null) {
       return Result.failure(Exception("رقم الهاتف مسجل مسبقاً في النظام"))
     }
+
+    // Insert locally in Room
     dao.insertUser(user)
+
+    // Sync to Firestore in real-time so Admin Dashboard on other devices receives registration immediately
+    syncManager?.pushUser(user)
+
     return Result.success(Unit)
   }
 
@@ -67,34 +130,49 @@ class AlbakalRepository(private val dao: AppDao) {
   fun getPendingUsers(): Flow<List<UserEntity>> = dao.getPendingUsers()
   suspend fun getUserById(id: String): UserEntity? = dao.getUserById(id)
 
-  suspend fun updateUser(user: UserEntity) = dao.updateUser(user)
-  suspend fun deleteUser(id: String) = dao.deleteUserById(id)
+  suspend fun updateUser(user: UserEntity) {
+    dao.updateUser(user)
+    syncManager?.pushUser(user)
+  }
+
+  suspend fun deleteUser(id: String) {
+    dao.deleteUserById(id)
+    syncManager?.deleteUser(id)
+  }
 
   suspend fun approveUser(userId: String) {
     val user = dao.getUserById(userId) ?: return
-    dao.updateUser(user.copy(status = "APPROVED"))
+    val approved = user.copy(status = "APPROVED")
+    dao.updateUser(approved)
+    syncManager?.pushUser(approved)
   }
 
   suspend fun rejectUser(userId: String) {
     val user = dao.getUserById(userId) ?: return
-    dao.updateUser(user.copy(status = "REJECTED"))
+    val rejected = user.copy(status = "REJECTED")
+    dao.updateUser(rejected)
+    syncManager?.pushUser(rejected)
   }
 
   suspend fun banMerchant(merchantId: String, reason: String) {
     val merchant = dao.getUserById(merchantId) ?: return
-    dao.updateUser(merchant.copy(status = "BANNED", banReason = reason))
-    // When banned, products are unpublished/hidden
-    val products = dao.getProductById(merchantId) // check
+    val banned = merchant.copy(status = "BANNED", banReason = reason)
+    dao.updateUser(banned)
+    syncManager?.pushUser(banned)
   }
 
   suspend fun unbanMerchant(merchantId: String) {
     val merchant = dao.getUserById(merchantId) ?: return
-    dao.updateUser(merchant.copy(status = "APPROVED", banReason = null))
+    val unbanned = merchant.copy(status = "APPROVED", banReason = null)
+    dao.updateUser(unbanned)
+    syncManager?.pushUser(unbanned)
   }
 
   suspend fun acceptHonorCode(merchantId: String) {
     val merchant = dao.getUserById(merchantId) ?: return
-    dao.updateUser(merchant.copy(honorCodeAccepted = true))
+    val updated = merchant.copy(honorCodeAccepted = true)
+    dao.updateUser(updated)
+    syncManager?.pushUser(updated)
   }
 
   suspend fun updateAdminCredentials(adminId: String, newEmail: String, newPass: String): Result<Unit> {
@@ -102,7 +180,9 @@ class AlbakalRepository(private val dao: AppDao) {
     if (admin.role != "ADMIN") {
       return Result.failure(Exception("لا توجد صلاحية لتعديل حساب الإدارة الرئيسي"))
     }
-    dao.updateUser(admin.copy(email = newEmail.trim(), password = newPass.trim()))
+    val updated = admin.copy(email = newEmail.trim(), password = newPass.trim())
+    dao.updateUser(updated)
+    syncManager?.pushUser(updated)
     return Result.success(Unit)
   }
 
@@ -142,33 +222,61 @@ class AlbakalRepository(private val dao: AppDao) {
   // Governorates & Districts
   fun getAllAreas(): Flow<List<GovernorateAreaEntity>> = dao.getAllAreas()
   suspend fun addArea(gov: String, dist: String) {
-    dao.insertArea(GovernorateAreaEntity("area_" + UUID.randomUUID().toString().take(8), gov.trim(), dist.trim()))
+    val area = GovernorateAreaEntity("area_" + UUID.randomUUID().toString().take(8), gov.trim(), dist.trim())
+    dao.insertArea(area)
+    syncManager?.pushArea(area)
   }
-  suspend fun deleteArea(id: String) = dao.deleteAreaById(id)
+  suspend fun deleteArea(id: String) {
+    dao.deleteAreaById(id)
+    syncManager?.deleteArea(id)
+  }
 
   // Categories
   fun getAllCategories(): Flow<List<ProductCategoryEntity>> = dao.getAllCategories()
   suspend fun addCategory(name: String) {
-    dao.insertCategory(ProductCategoryEntity("cat_" + UUID.randomUUID().toString().take(8), name.trim()))
+    val cat = ProductCategoryEntity("cat_" + UUID.randomUUID().toString().take(8), name.trim())
+    dao.insertCategory(cat)
+    syncManager?.pushCategory(cat)
   }
-  suspend fun deleteCategory(id: String) = dao.deleteCategoryById(id)
+  suspend fun deleteCategory(id: String) {
+    dao.deleteCategoryById(id)
+    syncManager?.deleteCategory(id)
+  }
 
   // Products
   fun getAllProducts(): Flow<List<ProductEntity>> = dao.getAllProducts()
   fun getPublishedProducts(): Flow<List<ProductEntity>> = dao.getPublishedProducts()
   fun getProductsByMerchant(merchantId: String): Flow<List<ProductEntity>> = dao.getProductsByMerchant(merchantId)
-  suspend fun addProduct(product: ProductEntity) = dao.insertProduct(product)
-  suspend fun updateProduct(product: ProductEntity) = dao.updateProduct(product)
-  suspend fun deleteProduct(id: String) = dao.deleteProductById(id)
+  suspend fun addProduct(product: ProductEntity) {
+    dao.insertProduct(product)
+    syncManager?.pushProduct(product)
+  }
+  suspend fun updateProduct(product: ProductEntity) {
+    dao.updateProduct(product)
+    syncManager?.pushProduct(product)
+  }
+  suspend fun deleteProduct(id: String) {
+    dao.deleteProductById(id)
+    syncManager?.deleteProduct(id)
+  }
 
   // Sponsored Ads
   fun getAllAds(): Flow<List<SponsoredAdEntity>> = dao.getAllAds()
   fun getActiveAds(): Flow<List<SponsoredAdEntity>> = dao.getActiveAds()
-  suspend fun addAd(ad: SponsoredAdEntity) = dao.insertAd(ad)
-  suspend fun updateAd(ad: SponsoredAdEntity) = dao.updateAd(ad)
-  suspend fun deleteAd(id: String) = dao.deleteAdById(id)
+  suspend fun addAd(ad: SponsoredAdEntity) {
+    dao.insertAd(ad)
+    syncManager?.pushAd(ad)
+  }
+  suspend fun updateAd(ad: SponsoredAdEntity) {
+    dao.updateAd(ad)
+    syncManager?.pushAd(ad)
+  }
+  suspend fun deleteAd(id: String) {
+    dao.deleteAdById(id)
+    syncManager?.deleteAd(id)
+  }
 
-  // Cart
+  // Cart (Local to customer device)
   fun getCart(customerId: String): Flow<List<CartItemEntity>> = dao.getCartForCustomer(customerId)
   suspend fun addToCart(
     customerId: String,
@@ -198,8 +306,6 @@ class AlbakalRepository(private val dao: AppDao) {
   suspend fun updateCartQuantity(cartItemId: String, quantity: Int) {
     if (quantity <= 0) {
       dao.deleteCartItem(cartItemId)
-    } else {
-      // Find and update
     }
   }
   suspend fun removeCartItem(cartItemId: String) = dao.deleteCartItem(cartItemId)
@@ -268,10 +374,15 @@ class AlbakalRepository(private val dao: AppDao) {
       }
       dao.insertOrderItems(orderItems)
 
+      // Sync to cloud Firestore
+      syncManager?.pushOrder(order, orderItems)
+
       // Update merchant debt with app commission
       val merchant = dao.getUserById(mId)
       if (merchant != null) {
-        dao.updateUser(merchant.copy(currentDebt = merchant.currentDebt + appCommission))
+        val updatedMerchant = merchant.copy(currentDebt = merchant.currentDebt + appCommission)
+        dao.updateUser(updatedMerchant)
+        syncManager?.pushUser(updatedMerchant)
       }
       createdOrderIds.add(orderNumber)
     }
@@ -282,25 +393,25 @@ class AlbakalRepository(private val dao: AppDao) {
 
   suspend fun acknowledgeOrder(orderId: String) {
     val order = dao.getOrderById(orderId) ?: return
-    dao.updateOrder(
-      order.copy(
-        isAcknowledgedByMerchant = true,
-        orderStatus = "PREPARING",
-        updatedAt = System.currentTimeMillis()
-      )
+    val updated = order.copy(
+      isAcknowledgedByMerchant = true,
+      orderStatus = "PREPARING",
+      updatedAt = System.currentTimeMillis()
     )
+    dao.updateOrder(updated)
+    syncManager?.updateOrderStatus(updated)
   }
 
   suspend fun shipOrder(orderId: String, captainName: String, captainPhone: String) {
     val order = dao.getOrderById(orderId) ?: return
-    dao.updateOrder(
-      order.copy(
-        orderStatus = "SHIPPED",
-        captainName = captainName.trim(),
-        captainPhone = captainPhone.trim(),
-        updatedAt = System.currentTimeMillis()
-      )
+    val updated = order.copy(
+      orderStatus = "SHIPPED",
+      captainName = captainName.trim(),
+      captainPhone = captainPhone.trim(),
+      updatedAt = System.currentTimeMillis()
     )
+    dao.updateOrder(updated)
+    syncManager?.updateOrderStatus(updated)
   }
 
   suspend fun merchantConfirmDelivered(orderId: String) {
@@ -311,11 +422,14 @@ class AlbakalRepository(private val dao: AppDao) {
       updatedAt = System.currentTimeMillis()
     )
     dao.updateOrder(updated)
+    syncManager?.updateOrderStatus(updated)
 
     // Update merchant total earnings
     val merchant = dao.getUserById(order.merchantId)
     if (merchant != null) {
-      dao.updateUser(merchant.copy(totalEarnings = merchant.totalEarnings + order.totalProductsPrice))
+      val updatedMerchant = merchant.copy(totalEarnings = merchant.totalEarnings + order.totalProductsPrice)
+      dao.updateUser(updatedMerchant)
+      syncManager?.pushUser(updatedMerchant)
     }
   }
 
@@ -327,6 +441,7 @@ class AlbakalRepository(private val dao: AppDao) {
       updatedAt = System.currentTimeMillis()
     )
     dao.updateOrder(updated)
+    syncManager?.updateOrderStatus(updated)
   }
 
   // Debt Payments
@@ -352,19 +467,27 @@ class AlbakalRepository(private val dao: AppDao) {
       status = "PENDING"
     )
     dao.insertDebtPayment(req)
+    syncManager?.pushDebtPayment(req)
   }
 
   suspend fun approveDebtPayment(paymentId: String, payment: DebtPaymentRequestEntity) {
-    dao.updateDebtPayment(payment.copy(status = "APPROVED", reviewedAt = System.currentTimeMillis()))
+    val approved = payment.copy(status = "APPROVED", reviewedAt = System.currentTimeMillis())
+    dao.updateDebtPayment(approved)
+    syncManager?.pushDebtPayment(approved)
+
     val merchant = dao.getUserById(payment.merchantId)
     if (merchant != null) {
       val newDebt = (merchant.currentDebt - payment.amount).coerceAtLeast(0.0)
-      dao.updateUser(merchant.copy(currentDebt = newDebt))
+      val updatedMerchant = merchant.copy(currentDebt = newDebt)
+      dao.updateUser(updatedMerchant)
+      syncManager?.pushUser(updatedMerchant)
     }
   }
 
   suspend fun rejectDebtPayment(payment: DebtPaymentRequestEntity) {
-    dao.updateDebtPayment(payment.copy(status = "REJECTED", reviewedAt = System.currentTimeMillis()))
+    val rejected = payment.copy(status = "REJECTED", reviewedAt = System.currentTimeMillis())
+    dao.updateDebtPayment(rejected)
+    syncManager?.pushDebtPayment(rejected)
   }
 
   // Support & Complaints
@@ -397,12 +520,17 @@ class AlbakalRepository(private val dao: AppDao) {
   suspend fun verifyAndResetPassword(phone: String, code: String, newPass: String): Result<Unit> {
     val user = dao.getUserByPhone(phone.trim())
       ?: return Result.failure(Exception("رقم الهاتف غير موجود"))
-    dao.updateUser(user.copy(password = newPass.trim()))
+    val updated = user.copy(password = newPass.trim())
+    dao.updateUser(updated)
+    syncManager?.pushUser(updated)
     return Result.success(Unit)
   }
 
   // App Settings
   fun getSettings(): Flow<AppSettingsEntity?> = dao.getSettings()
   suspend fun getSettingsDirect(): AppSettingsEntity = dao.getSettingsDirect() ?: AppSettingsEntity()
-  suspend fun updateSettings(settings: AppSettingsEntity) = dao.updateSettings(settings)
+  suspend fun updateSettings(settings: AppSettingsEntity) {
+    dao.updateSettings(settings)
+    syncManager?.pushSettings(settings)
+  }
 }

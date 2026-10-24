@@ -27,15 +27,21 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import com.example.data.remote.FirestoreSyncManager
 import kotlinx.coroutines.launch
 
 class AlbakalViewModel(application: Application) : AndroidViewModel(application) {
   private val repository: AlbakalRepository
   private val alarmManager: OrderAlarmManager = OrderAlarmManager(application)
+  private val syncManager: FirestoreSyncManager
 
   init {
     val db = AlbakalDatabase.getDatabase(application)
-    repository = AlbakalRepository(db.appDao())
+    syncManager = FirestoreSyncManager(application, db.appDao())
+    repository = AlbakalRepository(db.appDao(), syncManager)
+    viewModelScope.launch {
+      syncManager.seedInitialAdminIfMissing()
+    }
   }
 
   // Session & Navigation State

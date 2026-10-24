@@ -161,6 +161,9 @@ interface AppDao {
 
   // Order Items
   @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun insertOrderItem(item: OrderItemEntity)
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun insertOrderItems(items: List<OrderItemEntity>)
 
   @Query("SELECT * FROM order_items WHERE orderId = :orderId")
