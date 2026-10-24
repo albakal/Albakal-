@@ -1,0 +1,6 @@
+{
+  "name": "البقال",
+  "description": "منصة وتطبيق متكامل لربط العملاء بالتجار وإدارة متجر البقالة والطلبات والمديونيات ولوحة الإدارة",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
